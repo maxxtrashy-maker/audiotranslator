@@ -7,8 +7,13 @@ import '../repositories/translation_repository.dart';
 class GenerateSpeechParams extends Equatable {
   final String text;
   final String language;
+  final Function(String)? onProgress;
 
-  const GenerateSpeechParams({required this.text, required this.language});
+  const GenerateSpeechParams({
+    required this.text,
+    required this.language,
+    this.onProgress,
+  });
 
   @override
   List<Object?> get props => [text, language];
@@ -21,6 +26,10 @@ class GenerateSpeech implements UseCase<File, GenerateSpeechParams> {
 
   @override
   ResultFuture<File> call(GenerateSpeechParams params) {
-    return _repository.generateSpeech(params.text, params.language);
+    return _repository.generateSpeech(
+      params.text,
+      params.language,
+      onProgress: params.onProgress,
+    );
   }
 }

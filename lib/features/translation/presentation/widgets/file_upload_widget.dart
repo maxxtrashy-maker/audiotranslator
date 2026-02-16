@@ -4,19 +4,26 @@ import 'package:flutter/material.dart';
 
 class FileUploadWidget extends StatelessWidget {
   final Function(File) onFileSelected;
+  final List<String>? acceptedExtensions;
+  final String? buttonText;
 
-  const FileUploadWidget({super.key, required this.onFileSelected});
+  const FileUploadWidget({
+    super.key,
+    required this.onFileSelected,
+    this.acceptedExtensions,
+    this.buttonText,
+  });
 
   @override
   Widget build(BuildContext context) {
     return Center(
       child: ElevatedButton.icon(
         icon: const Icon(Icons.upload_file),
-        label: const Text('Sélectionner un fichier audio'),
+        label: Text(buttonText ?? 'Sélectionner un fichier'),
         onPressed: () async {
           FilePickerResult? result = await FilePicker.platform.pickFiles(
-            type: FileType.audio,
-             // allowMultiple: false
+            type: acceptedExtensions != null ? FileType.custom : FileType.any,
+            allowedExtensions: acceptedExtensions,
           );
 
           if (result != null && result.files.single.path != null) {

@@ -19,3 +19,20 @@ class CacheFailure extends Failure {
 class PermissionFailure extends Failure {
   const PermissionFailure(super.message);
 }
+
+class QuotaExceededFailure extends Failure {
+  const QuotaExceededFailure(super.message);
+}
+
+class InvalidFormatFailure extends Failure {
+  const InvalidFormatFailure(super.message);
+}
+
+class FileTooLargeFailure extends Failure {
+  const FileTooLargeFailure(super.message);
+}
+
+class TimeoutFailure extends Failure {
+  const TimeoutFailure(super.message);
+}
+

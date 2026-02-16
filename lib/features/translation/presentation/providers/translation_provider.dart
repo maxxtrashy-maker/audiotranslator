@@ -1,38 +1,31 @@
 import 'dart:io';
 import 'package:flutter_riverpod/flutter_riverpod.dart';
-import 'package:google_generative_ai/google_generative_ai.dart';
-import 'package:flutter_tts/flutter_tts.dart';
-import '../../domain/usecases/transcribe_audio.dart';
-import '../../domain/usecases/translate_text.dart';
+import 'package:http/http.dart' as http;
+import '../../../../core/config/api_config.dart';
 import '../../domain/usecases/generate_speech.dart';
-import '../../data/datasources/gemini_data_source.dart';
 import '../../data/datasources/tts_data_source.dart';
 import '../../data/repositories/translation_repository_impl.dart';
 
 // Dependencies
-final geminiDataSourceProvider = Provider<GeminiDataSource>((ref) {
-  const apiKey = String.fromEnvironment('GEMINI_API_KEY', defaultValue: 'dummy_key');
-  final model = GenerativeModel(model: 'gemini-1.5-pro', apiKey: apiKey);
-  return GeminiDataSourceImpl(model);
+final httpClientProvider = Provider<http.Client>((ref) {
+  return http.Client();
+});
+
+final apiConfigProvider = Provider<ApiConfig>((ref) {
+  return ApiConfig();
 });
 
 final ttsDataSourceProvider = Provider<TtsDataSource>((ref) {
-  return TtsDataSourceImpl(FlutterTts());
+  return TtsDataSourceImpl(
+    ref.watch(httpClientProvider),
+    ref.watch(apiConfigProvider),
+  );
 });
 
 final translationRepositoryProvider = Provider((ref) {
   return TranslationRepositoryImpl(
-    ref.watch(geminiDataSourceProvider),
     ref.watch(ttsDataSourceProvider),
   );
-});
-
-final transcribeAudioUseCaseProvider = Provider((ref) {
-  return TranscribeAudio(ref.watch(translationRepositoryProvider));
-});
-
-final translateTextUseCaseProvider = Provider((ref) {
-  return TranslateText(ref.watch(translationRepositoryProvider));
 });
 
 final generateSpeechUseCaseProvider = Provider((ref) {
@@ -40,102 +33,141 @@ final generateSpeechUseCaseProvider = Provider((ref) {
 });
 
 // State
-class TranslationState {
+class TtsState {
   final bool isLoading;
   final String? errorMessage;
-  final String? transcription;
-  final String? translation;
+  final String? inputText;
   final File? audioFile;
   final double progress; // 0.0 to 1.0
+  final String targetLanguage; // Target language for TTS
+  final String? statusMessage; // Current status message
 
-  const TranslationState({
+  const TtsState({
     this.isLoading = false,
     this.errorMessage,
-    this.transcription,
-    this.translation,
+    this.inputText,
     this.audioFile,
     this.progress = 0.0,
+    this.targetLanguage = 'French',
+    this.statusMessage,
   });
 
-  TranslationState copyWith({
+  TtsState copyWith({
     bool? isLoading,
     String? errorMessage,
-    String? transcription,
-    String? translation,
+    String? inputText,
     File? audioFile,
     double? progress,
+    String? targetLanguage,
+    String? statusMessage,
   }) {
-    return TranslationState(
+    return TtsState(
       isLoading: isLoading ?? this.isLoading,
       errorMessage: errorMessage,
-      transcription: transcription ?? this.transcription,
-      translation: translation ?? this.translation,
+      inputText: inputText ?? this.inputText,
       audioFile: audioFile ?? this.audioFile,
       progress: progress ?? this.progress,
+      targetLanguage: targetLanguage ?? this.targetLanguage,
+      statusMessage: statusMessage ?? this.statusMessage,
     );
   }
 }
 
-class TranslationNotifier extends StateNotifier<TranslationState> {
-  final TranscribeAudio _transcribeAudio;
-  final TranslateText _translateText;
+class TtsNotifier extends StateNotifier<TtsState> {
   final GenerateSpeech _generateSpeech;
 
-  TranslationNotifier(
-    this._transcribeAudio,
-    this._translateText,
-    this._generateSpeech,
-  ) : super(const TranslationState());
+  TtsNotifier(this._generateSpeech) : super(const TtsState());
 
-  Future<void> processAudio(File file) async {
-    state = state.copyWith(isLoading: true, progress: 0.1, errorMessage: null);
+  void setTargetLanguage(String language) {
+    state = state.copyWith(targetLanguage: language);
+  }
 
-    // 1. Transcribe
-    final transcribeResult = await _transcribeAudio(file);
-
-    await transcribeResult.fold(
-      (failure) async {
-         state = state.copyWith(isLoading: false, errorMessage: failure.message, progress: 0);
-      },
-      (transcription) async {
-        state = state.copyWith(transcription: transcription, progress: 0.4);
-
-        // 2. Translate
-        final translateResult = await _translateText(TranslateTextParams(text: transcription, targetLanguage: 'French'));
-
-        await translateResult.fold(
-          (failure) async {
-            state = state.copyWith(isLoading: false, errorMessage: failure.message, progress: 0);
-          },
-          (translation) async {
-             state = state.copyWith(translation: translation, progress: 0.7);
-
-             // 3. TTS
-             final ttsResult = await _generateSpeech(GenerateSpeechParams(text: translation, language: 'fr-FR'));
-
-             ttsResult.fold(
-               (failure) {
-                 state = state.copyWith(isLoading: false, errorMessage: failure.message, progress: 0);
-               },
-               (audioFile) {
-                 state = state.copyWith(isLoading: false, audioFile: audioFile, progress: 1.0);
-               }
-             );
-          }
+  Future<void> processTextFile(File file) async {
+    try {
+      // Read text file
+      final text = await file.readAsString();
+      
+      if (text.trim().isEmpty) {
+        state = state.copyWith(
+          isLoading: false,
+          errorMessage: 'Le fichier texte est vide',
+          progress: 0,
         );
+        return;
       }
-    );
+
+      state = state.copyWith(
+        isLoading: true,
+        progress: 0.1,
+        errorMessage: null,
+        inputText: text,
+        statusMessage: 'Préparation...',
+      );
+
+      // Generate speech with progress callback
+      final languageCode = _getLanguageCode(state.targetLanguage);
+      final ttsResult = await _generateSpeech(
+        GenerateSpeechParams(
+          text: text,
+          language: languageCode,
+          onProgress: (message) {
+            // Update status message in real-time
+            state = state.copyWith(statusMessage: message);
+          },
+        ),
+      );
+
+      ttsResult.fold(
+        (failure) {
+          state = state.copyWith(
+            isLoading: false,
+            errorMessage: failure.message,
+            statusMessage: null,
+          );
+        },
+        (audioFile) {
+          state = state.copyWith(
+            isLoading: false,
+            audioFile: audioFile,
+            progress: 1.0,
+            statusMessage: 'Terminé !',
+          );
+        },
+      );
+    } catch (e) {
+      state = state.copyWith(
+        isLoading: false,
+        errorMessage: 'Erreur lors de la lecture du fichier: ${e.toString()}',
+        statusMessage: null,
+      );
+    }
   }
 
   void reset() {
-    state = const TranslationState();
+    state = TtsState(targetLanguage: state.targetLanguage);
+  }
+
+  /// Convert language name to language code for TTS
+  String _getLanguageCode(String language) {
+    final languageMap = {
+      'French': 'fr-FR',
+      'English': 'en-US',
+      'Spanish': 'es-ES',
+      'German': 'de-DE',
+      'Italian': 'it-IT',
+      'Portuguese': 'pt-BR',
+      'Japanese': 'ja-JP',
+      'Chinese': 'zh-CN',
+      'Korean': 'ko-KR',
+      'Arabic': 'ar-XA',
+    };
+    
+    return languageMap[language] ?? 'en-US';
   }
 }
 
-final translationProvider = StateNotifierProvider<TranslationNotifier, TranslationState>((ref) {
-  return TranslationNotifier(
-    ref.watch(transcribeAudioUseCaseProvider),
-    ref.watch(translateTextUseCaseProvider),
+final ttsProvider = StateNotifierProvider<TtsNotifier, TtsState>((ref) {
+  return TtsNotifier(
     ref.watch(generateSpeechUseCaseProvider),
   );
 });
