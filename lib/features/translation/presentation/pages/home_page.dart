@@ -14,7 +14,7 @@ class HomePage extends ConsumerWidget {
     final state = ref.watch(ttsProvider);
 
     return Scaffold(
-      appBar: AppBar(title: const Text('Text-to-Speech - Synthèse Vocale')),
+      appBar: AppBar(title: const Text('Elokens')),
       body: Padding(
         padding: const EdgeInsets.all(16.0),
         child: SingleChildScrollView(
