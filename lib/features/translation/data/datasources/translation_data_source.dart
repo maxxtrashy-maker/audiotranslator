@@ -8,83 +8,62 @@ abstract class TranslationDataSource {
   Future<String> translateText(String text, String targetLanguage);
 }
 
-class TranslationDataSourceImpl implements TranslationDataSource {
+class DeeplTranslationDataSourceImpl implements TranslationDataSource {
   final http.Client _client;
   final ApiConfig _apiConfig;
 
-  TranslationDataSourceImpl(this._client, this._apiConfig);
+  DeeplTranslationDataSourceImpl(this._client, this._apiConfig);
 
   @override
   Future<String> translateText(String text, String targetLanguage) async {
     try {
-      // Prepare request parameters
-      final uri = Uri.parse(ApiConfig.translationEndpoint).replace(
-        queryParameters: {
-          'key': _apiConfig.apiKey,
-          'q': text,
-          'target': _getLanguageCode(targetLanguage),
-          'format': 'text',
-        },
-      );
-
-      // Make API request
       final response = await _client.post(
-        uri,
-        headers: {'Content-Type': 'application/json'},
+        Uri.parse(ApiConfig.deeplTranslationEndpoint),
+        headers: {
+          'Authorization': 'DeepL-Auth-Key ${_apiConfig.deeplApiKey}',
+          'Content-Type': 'application/json',
+        },
+        body: jsonEncode({
+          'text': [text],
+          'target_lang': targetLanguage,
+        }),
       ).timeout(
         const Duration(seconds: 30),
-        onTimeout: () => throw const TimeoutFailure('Translation request timed out'),
+        onTimeout: () =>
+            throw const TimeoutFailure('La traduction a d\u00e9pass\u00e9 le d\u00e9lai (30s).'),
       );
 
-      // Handle response
       if (response.statusCode == 200) {
         final data = jsonDecode(response.body);
-        
-        // Extract translation
-        final translations = data['data']['translations'] as List;
-        
+        final translations = data['translations'] as List;
         if (translations.isEmpty) {
-          throw const ServerFailure('No translation result');
+          throw const ServerFailure('Aucun r\u00e9sultat de traduction.');
         }
-        
-        return translations[0]['translatedText'] as String;
+        return translations[0]['text'] as String;
       } else if (response.statusCode == 429) {
         throw const QuotaExceededFailure(
-          'Translation quota exceeded (500K chars/month). Try again tomorrow.'
+          'Quota DeepL d\u00e9pass\u00e9. R\u00e9essayez plus tard.',
+        );
+      } else if (response.statusCode == 456) {
+        throw const QuotaExceededFailure(
+          'Quota mensuel DeepL atteint. R\u00e9essayez le mois prochain.',
         );
       } else if (response.statusCode == 403) {
         throw const ServerFailure(
-          'API key invalid or Translation API not enabled in Google Cloud Console'
+          'Cl\u00e9 API DeepL invalide. V\u00e9rifiez votre fichier .env.',
         );
       } else {
         final error = jsonDecode(response.body);
-        throw ServerFailure(
-          'Translation API error: ${error['error']?['message'] ?? 'Unknown error'}'
-        );
+        final message = error['message'] ?? 'Erreur inconnue';
+        throw ServerFailure('Erreur DeepL : $message');
       }
     } on TimeoutException {
-      throw const TimeoutFailure('Translation request timed out after 30 seconds');
+      throw const TimeoutFailure(
+        'La traduction a d\u00e9pass\u00e9 le d\u00e9lai (30s).',
+      );
     } catch (e) {
       if (e is Failure) rethrow;
-      throw ServerFailure('Failed to translate text: ${e.toString()}');
+      throw ServerFailure('Erreur de traduction : ${e.toString()}');
     }
-  }
-
-  /// Convert language name to ISO 639-1 code
-  String _getLanguageCode(String language) {
-    final languageMap = {
-      'French': 'fr',
-      'English': 'en',
-      'Spanish': 'es',
-      'German': 'de',
-      'Italian': 'it',
-      'Portuguese': 'pt',
-      'Japanese': 'ja',
-      'Chinese': 'zh',
-      'Korean': 'ko',
-      'Arabic': 'ar',
-    };
-    
-    return languageMap[language] ?? language.toLowerCase();
   }
 }

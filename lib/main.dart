@@ -43,7 +43,7 @@ void main() async {
                   ),
                   const SizedBox(height: 24),
                   const Text(
-                    'Veuillez créer un fichier .env à la racine du projet avec votre clé API Google Cloud.',
+                    'Veuillez cr\u00e9er un fichier .env \u00e0 la racine du projet avec vos cl\u00e9s API :\nGOOGLE_CLOUD_API_KEY, GROQ_API_KEY, DEEPL_API_KEY',
                     textAlign: TextAlign.center,
                     style: TextStyle(fontSize: 12),
                   ),

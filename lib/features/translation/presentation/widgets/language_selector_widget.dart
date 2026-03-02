@@ -1,26 +1,28 @@
 import 'package:flutter/material.dart';
 import 'package:flutter_riverpod/flutter_riverpod.dart';
+import '../../../../core/utils/language_mapper.dart';
 import '../providers/translation_provider.dart';
 
 class LanguageSelectorWidget extends ConsumerWidget {
-  const LanguageSelectorWidget({super.key});
+  final bool isSource;
+  final List<String>? languages;
 
-  static const List<String> supportedLanguages = [
-    'French',
-    'English',
-    'Spanish',
-    'German',
-    'Italian',
-    'Portuguese',
-    'Japanese',
-    'Chinese',
-    'Korean',
-    'Arabic',
-  ];
+  const LanguageSelectorWidget({
+    super.key,
+    this.isSource = false,
+    this.languages,
+  });
 
   @override
   Widget build(BuildContext context, WidgetRef ref) {
-    final state = ref.watch(ttsProvider);
+    final state = ref.watch(translationProvider);
+
+    final languageList = languages ??
+        (isSource
+            ? LanguageMapper.sourceLanguages
+            : LanguageMapper.supportedTargetLanguages);
+
+    final currentValue = isSource ? state.sourceLanguage : state.targetLanguage;
 
     return Card(
       child: Padding(
@@ -28,27 +30,33 @@ class LanguageSelectorWidget extends ConsumerWidget {
         child: Column(
           crossAxisAlignment: CrossAxisAlignment.start,
           children: [
-            const Text(
-              'Langue de synthèse vocale :',
-              style: TextStyle(fontWeight: FontWeight.bold),
+            Text(
+              isSource ? 'Langue source :' : 'Langue cible :',
+              style: const TextStyle(fontWeight: FontWeight.bold),
             ),
             const SizedBox(height: 8),
             DropdownButton<String>(
-              value: state.targetLanguage,
+              value: currentValue,
               isExpanded: true,
-              items: supportedLanguages.map((String language) {
+              items: languageList.map((String language) {
                 return DropdownMenuItem<String>(
                   value: language,
-                  child: Text(_getLanguageLabel(language)),
+                  child: Text(LanguageMapper.getLabel(language)),
                 );
               }).toList(),
               onChanged: state.isLoading
                   ? null
                   : (String? newValue) {
                       if (newValue != null) {
-                        ref
-                            .read(ttsProvider.notifier)
-                            .setTargetLanguage(newValue);
+                        if (isSource) {
+                          ref
+                              .read(translationProvider.notifier)
+                              .setSourceLanguage(newValue);
+                        } else {
+                          ref
+                              .read(translationProvider.notifier)
+                              .setTargetLanguage(newValue);
+                        }
                       }
                     },
             ),
@@ -56,22 +64,5 @@ class LanguageSelectorWidget extends ConsumerWidget {
         ),
       ),
     );
-  }
-
-  String _getLanguageLabel(String language) {
-    final labels = {
-      'French': '🇫🇷 Français',
-      'English': '🇬🇧 English',
-      'Spanish': '🇪🇸 Español',
-      'German': '🇩🇪 Deutsch',
-      'Italian': '🇮🇹 Italiano',
-      'Portuguese': '🇵🇹 Português',
-      'Japanese': '🇯🇵 日本語',
-      'Chinese': '🇨🇳 中文',
-      'Korean': '🇰🇷 한국어',
-      'Arabic': '🇸🇦 العربية',
-    };
-    
-    return labels[language] ?? language;
   }
 }
