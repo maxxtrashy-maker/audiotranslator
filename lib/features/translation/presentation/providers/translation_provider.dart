@@ -1,15 +1,20 @@
 import 'dart:io';
+import 'package:flutter/foundation.dart';
 import 'package:flutter_riverpod/flutter_riverpod.dart';
 import 'package:http/http.dart' as http;
 import '../../../../core/config/api_config.dart';
 import '../../../../core/utils/language_mapper.dart';
+import '../../../../core/utils/transcript_saver.dart';
 import '../../domain/usecases/generate_speech.dart';
 import '../../domain/usecases/transcribe_audio.dart';
 import '../../domain/usecases/translate_text.dart';
+import '../../domain/usecases/extract_youtube_transcript.dart';
 import '../../data/datasources/speech_to_text_data_source.dart';
 import '../../data/datasources/translation_data_source.dart';
 import '../../data/datasources/tts_data_source.dart';
+import '../../data/datasources/youtube_transcript_data_source.dart';
 import '../../data/repositories/translation_repository_impl.dart';
+import '../../data/repositories/youtube_transcript_repository_impl.dart';
 
 // --- Dependencies ---
 
@@ -42,6 +47,22 @@ final ttsDataSourceProvider = Provider<TtsDataSource>((ref) {
   );
 });
 
+final youTubeTranscriptDataSourceProvider = Provider<YouTubeTranscriptDataSource>((ref) {
+  return YouTubeTranscriptDataSourceImpl(
+    ref.watch(httpClientProvider),
+  );
+});
+
+final youTubeTranscriptRepositoryProvider = Provider((ref) {
+  return YouTubeTranscriptRepositoryImpl(
+    ref.watch(youTubeTranscriptDataSourceProvider),
+  );
+});
+
+final extractYouTubeTranscriptUseCaseProvider = Provider((ref) {
+  return ExtractYouTubeTranscript(ref.watch(youTubeTranscriptRepositoryProvider));
+});
+
 final translationRepositoryProvider = Provider((ref) {
   return TranslationRepositoryImpl(
     ref.watch(sttDataSourceProvider),
@@ -64,8 +85,8 @@ final translateTextUseCaseProvider = Provider((ref) {
 
 // --- State ---
 
-enum PipelineStep { idle, transcribing, translating, generatingAudio, completed, error }
-enum InputMode { textFile, audioFile }
+enum PipelineStep { idle, transcribing, translating, generatingAudio, extractingTranscript, completed, error }
+enum InputMode { textFile, audioFile, youTube }
 
 class TranslationState {
   final bool isLoading;
@@ -80,6 +101,8 @@ class TranslationState {
   final String sourceLanguage;
   final String targetLanguage;
   final String? statusMessage;
+  final String? videoTitle;
+  final List<File> savedTextFiles;
 
   const TranslationState({
     this.isLoading = false,
@@ -94,6 +117,8 @@ class TranslationState {
     this.sourceLanguage = 'Auto-detect',
     this.targetLanguage = 'French',
     this.statusMessage,
+    this.videoTitle,
+    this.savedTextFiles = const [],
   });
 
   TranslationState copyWith({
@@ -109,6 +134,8 @@ class TranslationState {
     String? sourceLanguage,
     String? targetLanguage,
     String? statusMessage,
+    String? videoTitle,
+    List<File>? savedTextFiles,
   }) {
     return TranslationState(
       isLoading: isLoading ?? this.isLoading,
@@ -123,6 +150,8 @@ class TranslationState {
       sourceLanguage: sourceLanguage ?? this.sourceLanguage,
       targetLanguage: targetLanguage ?? this.targetLanguage,
       statusMessage: statusMessage ?? this.statusMessage,
+      videoTitle: videoTitle ?? this.videoTitle,
+      savedTextFiles: savedTextFiles ?? this.savedTextFiles,
     );
   }
 }
@@ -133,11 +162,13 @@ class TranslationNotifier extends StateNotifier<TranslationState> {
   final GenerateSpeech _generateSpeech;
   final TranscribeAudio _transcribeAudio;
   final TranslateText _translateText;
+  final ExtractYouTubeTranscript _extractYouTubeTranscript;
 
   TranslationNotifier(
     this._generateSpeech,
     this._transcribeAudio,
     this._translateText,
+    this._extractYouTubeTranscript,
   ) : super(const TranslationState());
 
   void setSourceLanguage(String language) {
@@ -248,9 +279,24 @@ class TranslationNotifier extends StateNotifier<TranslationState> {
 
       if (transcribedText == null) return;
 
+      // Save transcription .txt
+      final now = DateTime.now();
+      final dateStr = '${now.year}-${now.month.toString().padLeft(2, '0')}-${now.day.toString().padLeft(2, '0')}_${now.hour.toString().padLeft(2, '0')}-${now.minute.toString().padLeft(2, '0')}';
+      File? transcriptionFile;
+      try {
+        transcriptionFile = await TranscriptSaver.save(
+          text: transcribedText,
+          label: 'transcription_$dateStr',
+        );
+        debugPrint('[Save] Transcription saved: ${transcriptionFile.path}');
+      } catch (e) {
+        debugPrint('[Save] Failed to save transcription: $e');
+      }
+
       state = state.copyWith(
         transcribedText: transcribedText,
         inputText: transcribedText,
+        savedTextFiles: [if (transcriptionFile != null) transcriptionFile],
         progress: 0.33,
         currentStep: PipelineStep.translating,
         statusMessage: 'Traduction en cours...',
@@ -277,8 +323,24 @@ class TranslationNotifier extends StateNotifier<TranslationState> {
 
       if (translatedText == null) return;
 
+      // Save translation .txt
+      File? translationFile;
+      try {
+        translationFile = await TranscriptSaver.save(
+          text: translatedText,
+          label: 'traduction_$dateStr',
+        );
+        debugPrint('[Save] Translation saved: ${translationFile.path}');
+      } catch (e) {
+        debugPrint('[Save] Failed to save translation: $e');
+      }
+
       state = state.copyWith(
         translatedText: translatedText,
+        savedTextFiles: [
+          ...state.savedTextFiles,
+          if (translationFile != null) translationFile,
+        ],
         progress: 0.66,
         currentStep: PipelineStep.generatingAudio,
         statusMessage: 'G\u00e9n\u00e9ration audio...',
@@ -325,6 +387,61 @@ class TranslationNotifier extends StateNotifier<TranslationState> {
     }
   }
 
+  /// YouTube flow: extract subtitles only
+  Future<void> processYouTubeUrl(String videoId) async {
+    try {
+      state = state.copyWith(
+        isLoading: true,
+        progress: 0.1,
+        errorMessage: null,
+        currentStep: PipelineStep.extractingTranscript,
+        statusMessage: 'Extraction des sous-titres...',
+      );
+
+      final result = await _extractYouTubeTranscript(videoId);
+
+      await result.fold(
+        (failure) {
+          state = state.copyWith(
+            isLoading: false,
+            errorMessage: failure.message,
+            currentStep: PipelineStep.error,
+            statusMessage: null,
+          );
+        },
+        (data) async {
+          File? savedFile;
+          try {
+            savedFile = await TranscriptSaver.save(
+              text: data.transcript,
+              label: data.title,
+            );
+            debugPrint('[Save] YouTube transcript saved: ${savedFile.path}');
+          } catch (e) {
+            debugPrint('[Save] Failed to save transcript: $e');
+          }
+
+          state = state.copyWith(
+            isLoading: false,
+            transcribedText: data.transcript,
+            videoTitle: data.title,
+            savedTextFiles: savedFile != null ? [savedFile] : [],
+            progress: 1.0,
+            currentStep: PipelineStep.completed,
+            statusMessage: 'Terminé !',
+          );
+        },
+      );
+    } catch (e) {
+      state = state.copyWith(
+        isLoading: false,
+        errorMessage: 'Erreur lors de l\'extraction : ${e.toString()}',
+        currentStep: PipelineStep.error,
+        statusMessage: null,
+      );
+    }
+  }
+
   void reset() {
     state = TranslationState(
       inputMode: state.inputMode,
@@ -342,5 +459,6 @@ final translationProvider =
     ref.watch(generateSpeechUseCaseProvider),
     ref.watch(transcribeAudioUseCaseProvider),
     ref.watch(translateTextUseCaseProvider),
+    ref.watch(extractYouTubeTranscriptUseCaseProvider),
   );
 });

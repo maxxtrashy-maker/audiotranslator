@@ -1,11 +1,15 @@
+import 'dart:io';
 import 'package:flutter/material.dart';
 import 'package:flutter_riverpod/flutter_riverpod.dart';
+import 'package:share_plus/share_plus.dart';
 import '../../../../core/utils/language_mapper.dart';
 import '../providers/translation_provider.dart';
 import '../widgets/file_upload_widget.dart';
 import '../widgets/progress_widget.dart';
 import '../widgets/download_widget.dart';
 import '../widgets/language_selector_widget.dart';
+import '../widgets/youtube_url_input_widget.dart';
+import '../widgets/transcript_result_widget.dart';
 
 class HomePage extends ConsumerWidget {
   const HomePage({super.key});
@@ -14,6 +18,10 @@ class HomePage extends ConsumerWidget {
   Widget build(BuildContext context, WidgetRef ref) {
     final state = ref.watch(translationProvider);
     final isAudioMode = state.inputMode == InputMode.audioFile;
+    final isYouTubeMode = state.inputMode == InputMode.youTube;
+    final isYouTubeCompleted = isYouTubeMode &&
+        state.transcribedText != null &&
+        !state.isLoading;
 
     return Scaffold(
       appBar: AppBar(title: const Text('Elokens')),
@@ -28,13 +36,17 @@ class HomePage extends ConsumerWidget {
                 _buildErrorCard(context, state.errorMessage!),
 
               // Mode toggle
-              if (!state.isLoading && state.outputAudioFile == null)
+              if (!state.isLoading &&
+                  state.outputAudioFile == null &&
+                  !isYouTubeCompleted)
                 _buildModeToggle(context, ref, state),
 
               const SizedBox(height: 12),
 
-              // Language selectors
-              if (!state.isLoading && state.outputAudioFile == null) ...[
+              // Language selectors (hidden in YouTube mode)
+              if (!state.isLoading &&
+                  state.outputAudioFile == null &&
+                  !isYouTubeMode) ...[
                 if (isAudioMode)
                   const LanguageSelectorWidget(isSource: true),
                 LanguageSelectorWidget(
@@ -47,27 +59,47 @@ class HomePage extends ConsumerWidget {
               ],
 
               // Instructions
-              if (!state.isLoading && state.outputAudioFile == null)
-                _buildInstructions(context, isAudioMode),
+              if (!state.isLoading &&
+                  state.outputAudioFile == null &&
+                  !isYouTubeCompleted)
+                _buildInstructions(context, state.inputMode),
 
               const SizedBox(height: 20),
 
-              // File upload button
-              if (!state.isLoading && state.outputAudioFile == null)
+              // YouTube URL input
+              if (isYouTubeMode &&
+                  !state.isLoading &&
+                  !isYouTubeCompleted)
+                YouTubeUrlInputWidget(
+                  onExtract: (videoId) {
+                    ref
+                        .read(translationProvider.notifier)
+                        .processYouTubeUrl(videoId);
+                  },
+                ),
+
+              // File upload button (audio & text modes)
+              if (!isYouTubeMode &&
+                  !state.isLoading &&
+                  state.outputAudioFile == null)
                 FileUploadWidget(
                   onFileSelected: (file) {
                     if (isAudioMode) {
-                      ref.read(translationProvider.notifier).processAudioFile(file);
+                      ref
+                          .read(translationProvider.notifier)
+                          .processAudioFile(file);
                     } else {
-                      ref.read(translationProvider.notifier).processTextFile(file);
+                      ref
+                          .read(translationProvider.notifier)
+                          .processTextFile(file);
                     }
                   },
                   acceptedExtensions: isAudioMode
                       ? const ['m4a', 'mp3', 'wav', 'flac', 'ogg']
                       : const ['txt'],
                   buttonText: isAudioMode
-                      ? 'S\u00e9lectionner un fichier audio'
-                      : 'S\u00e9lectionner un fichier texte (.txt)',
+                      ? 'Sélectionner un fichier audio'
+                      : 'Sélectionner un fichier texte (.txt)',
                 ),
 
               // Progress
@@ -90,8 +122,19 @@ class HomePage extends ConsumerWidget {
                 ],
               ],
 
-              // Transcription result
-              if (state.transcribedText != null) ...[
+              // YouTube transcript result
+              if (isYouTubeCompleted)
+                TranscriptResultWidget(
+                  transcript: state.transcribedText!,
+                  savedFile: state.savedTextFiles.isNotEmpty
+                      ? state.savedTextFiles.first
+                      : null,
+                  onNewExtraction: () =>
+                      ref.read(translationProvider.notifier).reset(),
+                ),
+
+              // Transcription result (audio mode)
+              if (state.transcribedText != null && !isYouTubeMode) ...[
                 const SizedBox(height: 20),
                 _buildResultCard(
                   context,
@@ -99,6 +142,15 @@ class HomePage extends ConsumerWidget {
                   title: 'Transcription :',
                   text: state.transcribedText!,
                 ),
+                if (state.savedTextFiles.isNotEmpty)
+                  Padding(
+                    padding: const EdgeInsets.only(top: 8),
+                    child: OutlinedButton.icon(
+                      onPressed: () => _shareFile(state.savedTextFiles[0]),
+                      icon: const Icon(Icons.share, size: 18),
+                      label: const Text('Partager la transcription .txt'),
+                    ),
+                  ),
               ],
 
               // Translation result
@@ -110,17 +162,27 @@ class HomePage extends ConsumerWidget {
                   title: 'Traduction :',
                   text: state.translatedText!,
                 ),
+                if (state.savedTextFiles.length > 1)
+                  Padding(
+                    padding: const EdgeInsets.only(top: 8),
+                    child: OutlinedButton.icon(
+                      onPressed: () => _shareFile(state.savedTextFiles[1]),
+                      icon: const Icon(Icons.share, size: 18),
+                      label: const Text('Partager la traduction .txt'),
+                    ),
+                  ),
               ],
 
               // Input text preview (text mode only)
               if (state.inputText != null &&
                   !isAudioMode &&
+                  !isYouTubeMode &&
                   state.transcribedText == null) ...[
                 const SizedBox(height: 20),
                 _buildResultCard(
                   context,
                   icon: Icons.text_fields,
-                  title: 'Texte \u00e0 synth\u00e9tiser :',
+                  title: 'Texte à synthétiser :',
                   text: state.inputText!,
                 ),
               ],
@@ -141,7 +203,7 @@ class HomePage extends ConsumerWidget {
                             size: 48),
                         const SizedBox(height: 8),
                         Text(
-                          'Audio g\u00e9n\u00e9r\u00e9 avec succ\u00e8s !',
+                          'Audio généré avec succès !',
                           style: TextStyle(
                             fontWeight: FontWeight.bold,
                             color: Theme.of(context)
@@ -169,19 +231,30 @@ class HomePage extends ConsumerWidget {
     );
   }
 
+  Future<void> _shareFile(File file) async {
+    await SharePlus.instance.share(
+      ShareParams(files: [XFile(file.path)]),
+    );
+  }
+
   Widget _buildModeToggle(
       BuildContext context, WidgetRef ref, TranslationState state) {
     return SegmentedButton<InputMode>(
       segments: const [
         ButtonSegment(
           value: InputMode.audioFile,
-          label: Text('Fichier audio'),
+          label: Text('Audio'),
           icon: Icon(Icons.audiotrack),
         ),
         ButtonSegment(
           value: InputMode.textFile,
-          label: Text('Fichier texte'),
+          label: Text('Texte'),
           icon: Icon(Icons.description),
+        ),
+        ButtonSegment(
+          value: InputMode.youTube,
+          label: Text('YouTube'),
+          icon: Icon(Icons.play_circle_outline),
         ),
       ],
       selected: {state.inputMode},
@@ -191,15 +264,26 @@ class HomePage extends ConsumerWidget {
     );
   }
 
-  Widget _buildInstructions(BuildContext context, bool isAudioMode) {
-    final text = isAudioMode
-        ? '1. S\u00e9lectionnez la langue source (ou Auto-detect)\n'
-            '2. S\u00e9lectionnez la langue cible\n'
+  Widget _buildInstructions(BuildContext context, InputMode mode) {
+    final String text;
+    switch (mode) {
+      case InputMode.audioFile:
+        text = '1. Sélectionnez la langue source (ou Auto-detect)\n'
+            '2. Sélectionnez la langue cible\n'
             '3. Uploadez un fichier audio (m4a, mp3, wav...)\n'
-            '4. L\u0027application transcrira, traduira et g\u00e9n\u00e8rera l\u0027audio'
-        : '1. S\u00e9lectionnez la langue de synth\u00e8se vocale\n'
+            '4. L\'application transcrira, traduira et génèrera l\'audio';
+        break;
+      case InputMode.textFile:
+        text = '1. Sélectionnez la langue de synthèse vocale\n'
             '2. Uploadez un fichier .txt contenant votre texte\n'
-            '3. L\u0027application g\u00e9n\u00e9rera un fichier audio WAV';
+            '3. L\'application générera un fichier audio WAV';
+        break;
+      case InputMode.youTube:
+        text = '1. Collez l\'URL d\'une vidéo YouTube\n'
+            '2. L\'application extraira les sous-titres automatiquement\n'
+            '3. Copiez le texte extrait';
+        break;
+    }
 
     return Card(
       color: Theme.of(context).colorScheme.primaryContainer,
@@ -263,7 +347,7 @@ class HomePage extends ConsumerWidget {
             if (text.length > 300) ...[
               const SizedBox(height: 4),
               Text(
-                '(${text.length} caract\u00e8res au total)',
+                '(${text.length} caractères au total)',
                 style: TextStyle(fontSize: 12, color: Colors.grey.shade600),
               ),
             ],
@@ -317,21 +401,29 @@ class HomePage extends ConsumerWidget {
 
   String? _getSuggestion(String errorMessage) {
     if (errorMessage.contains('quota') || errorMessage.contains('Quota')) {
-      return 'Astuce : Les quotas gratuits se r\u00e9initialisent chaque mois.';
+      return 'Astuce : Les quotas gratuits se réinitialisent chaque mois.';
     }
     if (errorMessage.contains('API') && errorMessage.contains('invalide')) {
-      return 'Astuce : V\u00e9rifiez que vos cl\u00e9s API sont configur\u00e9es dans le fichier .env.';
+      return 'Astuce : Vérifiez que vos clés API sont configurées dans le fichier .env.';
     }
     if (errorMessage.contains('vide')) {
       return 'Astuce : Assurez-vous que votre fichier contient du contenu.';
     }
     if (errorMessage.contains('timeout') ||
-        errorMessage.contains('d\u00e9lai')) {
-      return 'Astuce : V\u00e9rifiez votre connexion internet et r\u00e9essayez.';
+        errorMessage.contains('délai')) {
+      return 'Astuce : Vérifiez votre connexion internet et réessayez.';
     }
     if (errorMessage.contains('25 Mo') ||
         errorMessage.contains('volumineux')) {
-      return 'Astuce : Le fichier audio ne doit pas d\u00e9passer 25 Mo.';
+      return 'Astuce : Le fichier audio ne doit pas dépasser 25 Mo.';
+    }
+    if (errorMessage.contains('sous-titre') ||
+        errorMessage.contains('publique')) {
+      return 'Astuce : Vérifiez que la vidéo est publique et possède des sous-titres activés.';
+    }
+    if (errorMessage.contains('YouTube') ||
+        errorMessage.contains('vidéo')) {
+      return 'Astuce : Vérifiez l\'URL et que la vidéo est accessible.';
     }
     return null;
   }
