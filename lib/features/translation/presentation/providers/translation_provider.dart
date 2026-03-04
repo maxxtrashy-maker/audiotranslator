@@ -50,6 +50,7 @@ final ttsDataSourceProvider = Provider<TtsDataSource>((ref) {
 final youTubeTranscriptDataSourceProvider = Provider<YouTubeTranscriptDataSource>((ref) {
   return YouTubeTranscriptDataSourceImpl(
     ref.watch(httpClientProvider),
+    ref.watch(apiConfigProvider),
   );
 });
 

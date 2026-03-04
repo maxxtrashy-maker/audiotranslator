@@ -3,6 +3,7 @@ import 'dart:convert';
 import 'package:flutter/foundation.dart';
 import 'package:http/http.dart' as http;
 import 'package:xml/xml.dart' as xml;
+import '../../../../core/config/api_config.dart';
 import '../../../../core/errors/failures.dart';
 
 abstract class YouTubeTranscriptDataSource {
@@ -11,14 +12,16 @@ abstract class YouTubeTranscriptDataSource {
 
 class YouTubeTranscriptDataSourceImpl implements YouTubeTranscriptDataSource {
   final http.Client _client;
+  final ApiConfig _apiConfig;
 
-  YouTubeTranscriptDataSourceImpl(this._client);
+  YouTubeTranscriptDataSourceImpl(this._client, this._apiConfig);
 
-  // InnerTube clients to try in order (WEB first, then ANDROID fallback)
-  static const _clients = [
+  /// InnerTube clients to try in order (WEB first, then ANDROID fallback).
+  /// Keys are loaded from ApiConfig (sourced from .env).
+  List<_InnerTubeClient> get _clients => [
     _InnerTubeClient(
       name: 'WEB',
-      key: 'AIzaSyAO_FJ2SlqU8Q4STEHLGCilw_Y9_11qcW8',
+      key: _apiConfig.youtubeWebKey,
       userAgent: 'Mozilla/5.0 (Windows NT 10.0; Win64; x64) '
           'AppleWebKit/537.36 (KHTML, like Gecko) Chrome/120.0.0.0 Safari/537.36',
       body: {
@@ -28,7 +31,7 @@ class YouTubeTranscriptDataSourceImpl implements YouTubeTranscriptDataSource {
     ),
     _InnerTubeClient(
       name: 'ANDROID',
-      key: 'AIzaSyA8eiZmM1FaDVjRy-df2KTyQ_vz_yYM39w',
+      key: _apiConfig.youtubeAndroidKey,
       userAgent: 'com.google.android.youtube/19.09.37 '
           '(Linux; U; Android 11) gzip',
       body: {
