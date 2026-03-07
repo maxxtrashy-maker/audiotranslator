@@ -2,6 +2,7 @@ import 'package:fpdart/fpdart.dart';
 import '../../domain/repositories/youtube_transcript_repository.dart';
 import '../datasources/youtube_transcript_data_source.dart';
 import '../../../../core/errors/failures.dart';
+import '../../../../core/utils/retry_helper.dart';
 
 class YouTubeTranscriptRepositoryImpl implements YouTubeTranscriptRepository {
   final YouTubeTranscriptDataSource _dataSource;
@@ -10,51 +11,14 @@ class YouTubeTranscriptRepositoryImpl implements YouTubeTranscriptRepository {
 
   @override
   Future<Either<Failure, ({String transcript, String title})>> extractTranscript(String videoId) async {
-    return _retryOperation(
-      () async {
-        try {
-          final result = await _dataSource.fetchTranscript(videoId);
-          return Right(result);
-        } catch (e) {
-          if (e is Failure) return Left(e);
-          return Left(ServerFailure(e.toString()));
-        }
-      },
-      maxRetries: 2,
-    );
-  }
-
-  /// Retry operation with exponential backoff
-  Future<Either<Failure, T>> _retryOperation<T>(
-    Future<Either<Failure, T>> Function() operation, {
-    required int maxRetries,
-  }) async {
-    int retryCount = 0;
-
-    while (true) {
+    return RetryHelper.retryOperation(() async {
       try {
-        final result = await operation();
-
-        return result.fold(
-          (failure) {
-            if (failure is QuotaExceededFailure ||
-                failure is TimeoutFailure ||
-                failure is InvalidFormatFailure ||
-                failure is FileTooLargeFailure) {
-              return Left(failure);
-            }
-            throw failure;
-          },
-          (success) => Right(success),
-        );
+        final result = await _dataSource.fetchTranscript(videoId);
+        return Right(result);
       } catch (e) {
-        retryCount++;
-        if (retryCount > maxRetries) {
-          if (e is Failure) return Left(e);
-          return Left(ServerFailure(e.toString()));
-        }
-        await Future.delayed(Duration(seconds: retryCount));
+        if (e is Failure) return Left(e);
+        return Left(ServerFailure(e.toString()));
       }
-    }
+    });
   }
 }
