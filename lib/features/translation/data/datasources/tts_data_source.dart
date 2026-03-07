@@ -21,7 +21,7 @@ class TtsDataSourceImpl implements TtsDataSource {
   @override
   Future<File> generateSpeech(String text, String language, {Function(String)? onProgress}) async {
     // Check if text needs to be chunked
-    if (text.length <= 4500) {
+    if (text.length <= TextChunker.defaultMaxChars) {
       onProgress?.call('Génération de l\'audio...');
       return _generateSingleAudio(text, language);
     } else {

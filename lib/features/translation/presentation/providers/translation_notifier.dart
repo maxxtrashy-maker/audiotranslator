@@ -10,6 +10,12 @@ import '../../domain/usecases/extract_youtube_transcript.dart';
 import 'translation_di_providers.dart';
 import 'translation_state.dart';
 
+// Progress constants for pipeline steps
+const double _kProgressStart = 0.05;
+const double _kProgressTextStart = 0.1;
+const double _kProgressTranscribed = 0.33;
+const double _kProgressTranslated = 0.66;
+
 class TranslationNotifier extends StateNotifier<TranslationState> {
   final GenerateSpeech _generateSpeech;
   final TranscribeAudio _transcribeAudio;
@@ -55,7 +61,7 @@ class TranslationNotifier extends StateNotifier<TranslationState> {
 
       state = state.copyWith(
         isLoading: true,
-        progress: 0.1,
+        progress: _kProgressTextStart,
         errorMessage: null,
         inputText: text,
         currentStep: PipelineStep.generatingAudio,
@@ -108,7 +114,7 @@ class TranslationNotifier extends StateNotifier<TranslationState> {
       // Step 1: Transcription
       state = state.copyWith(
         isLoading: true,
-        progress: 0.05,
+        progress: _kProgressStart,
         errorMessage: null,
         currentStep: PipelineStep.transcribing,
         statusMessage: 'Transcription en cours...',
@@ -149,7 +155,7 @@ class TranslationNotifier extends StateNotifier<TranslationState> {
         transcribedText: transcribedText,
         inputText: transcribedText,
         savedTextFiles: [if (transcriptionFile != null) transcriptionFile],
-        progress: 0.33,
+        progress: _kProgressTranscribed,
         currentStep: PipelineStep.translating,
         statusMessage: 'Traduction en cours...',
       );
@@ -193,7 +199,7 @@ class TranslationNotifier extends StateNotifier<TranslationState> {
           ...state.savedTextFiles,
           if (translationFile != null) translationFile,
         ],
-        progress: 0.66,
+        progress: _kProgressTranslated,
         currentStep: PipelineStep.generatingAudio,
         statusMessage: 'G\u00e9n\u00e9ration audio...',
       );
@@ -244,7 +250,7 @@ class TranslationNotifier extends StateNotifier<TranslationState> {
     try {
       state = state.copyWith(
         isLoading: true,
-        progress: 0.1,
+        progress: _kProgressTextStart,
         errorMessage: null,
         currentStep: PipelineStep.extractingTranscript,
         statusMessage: 'Extraction des sous-titres...',

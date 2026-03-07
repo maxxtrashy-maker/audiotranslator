@@ -13,13 +13,16 @@ class GroqSpeechToTextDataSourceImpl implements SpeechToTextDataSource {
   final http.Client _client;
   final ApiConfig _apiConfig;
 
+  /// Maximum file size for Groq Whisper API (25 MB)
+  static const int maxFileSizeBytes = 25 * 1024 * 1024;
+
   GroqSpeechToTextDataSourceImpl(this._client, this._apiConfig);
 
   @override
   Future<String> transcribeAudio(File audioFile) async {
     try {
       final fileSize = await audioFile.length();
-      if (fileSize > 25 * 1024 * 1024) {
+      if (fileSize > maxFileSizeBytes) {
         throw const FileTooLargeFailure(
           'Le fichier audio d\u00e9passe 25 Mo (limite Groq).',
         );
