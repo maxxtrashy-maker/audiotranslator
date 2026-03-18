@@ -115,14 +115,61 @@ void main() {
 
       await dataSource.fetchTranscript(tVideoId);
 
-      final captured = verify(() => mockClient.post(
+      final capturedUris = <Uri>[];
+      final capturedHeaders = <Map<String, String>>[];
+      verify(() => mockClient.post(
             captureAny(),
-            headers: any(named: 'headers'),
+            headers: captureAny(named: 'headers'),
             body: any(named: 'body'),
-          )).captured;
+          )).captured.forEach((c) {
+        if (c is Uri) capturedUris.add(c);
+        if (c is Map<String, String>) capturedHeaders.add(c);
+      });
 
-      final uri = (captured.first as Uri).toString();
-      expect(uri, contains('fake-web-key'));
+      expect(capturedUris.first.toString(), contains('fake-web-key'));
+      expect(capturedHeaders.first['X-Youtube-Client-Name'], '1');
+      expect(capturedHeaders.first['Origin'], 'https://www.youtube.com');
+    });
+
+    test('sends X-Youtube-Client-Name:3 for ANDROID client', () async {
+      var callCount = 0;
+      final capturedHeaders = <Map<String, String>>[];
+
+      when(() => mockClient.post(
+            any(),
+            headers: captureAny(named: 'headers'),
+            body: any(named: 'body'),
+          )).thenAnswer((invocation) async {
+        final headers = invocation.namedArguments[const Symbol('headers')]
+            as Map<String, String>;
+        capturedHeaders.add(headers);
+        callCount++;
+        if (callCount == 1) {
+          return http.Response(playerResponse(status: 'LOGIN_REQUIRED'), 200);
+        }
+        return http.Response(
+          playerResponse(
+            captionTracks: [
+              {
+                'baseUrl': 'https://example.com/captions',
+                'languageCode': 'en',
+                'kind': '',
+              },
+            ],
+          ),
+          200,
+        );
+      });
+
+      when(() => mockClient.get(
+            any(),
+            headers: any(named: 'headers'),
+          )).thenAnswer((_) async => http.Response(tTranscriptXml, 200));
+
+      await dataSource.fetchTranscript(tVideoId);
+
+      expect(capturedHeaders.length, 2);
+      expect(capturedHeaders[1]['X-Youtube-Client-Name'], '3');
     });
 
     test('throws ServerFailure when all clients fail (non-200)', () async {
