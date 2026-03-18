@@ -28,6 +28,13 @@ class YouTubeTranscriptDataSourceImpl implements YouTubeTranscriptDataSource {
         'clientName': 'WEB',
         'clientVersion': '2.20240304.00.00',
       },
+      // X-Youtube-Client-Name:1 + Origin/Referer required by YouTube for WEB client
+      extraHeaders: {
+        'X-Youtube-Client-Name': '1',
+        'X-Youtube-Client-Version': '2.20240304.00.00',
+        'Origin': 'https://www.youtube.com',
+        'Referer': 'https://www.youtube.com/',
+      },
     ),
     _InnerTubeClient(
       name: 'ANDROID',
@@ -38,6 +45,11 @@ class YouTubeTranscriptDataSourceImpl implements YouTubeTranscriptDataSource {
         'clientName': 'ANDROID',
         'clientVersion': '19.09.37',
         'androidSdkVersion': 30,
+      },
+      // X-Youtube-Client-Name:3 required — its absence causes HTTP 400
+      extraHeaders: {
+        'X-Youtube-Client-Name': '3',
+        'X-Youtube-Client-Version': '19.09.37',
       },
     ),
   ];
@@ -61,6 +73,7 @@ class YouTubeTranscriptDataSourceImpl implements YouTubeTranscriptDataSource {
           headers: {
             'Content-Type': 'application/json',
             'User-Agent': client.userAgent,
+            ...client.extraHeaders,
           },
           body: jsonEncode({
             'context': {
@@ -362,11 +375,13 @@ class _InnerTubeClient {
   final String key;
   final String userAgent;
   final Map<String, dynamic> body;
+  final Map<String, String> extraHeaders;
 
   const _InnerTubeClient({
     required this.name,
     required this.key,
     required this.userAgent,
     required this.body,
+    this.extraHeaders = const {},
   });
 }
