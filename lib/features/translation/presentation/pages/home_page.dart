@@ -126,9 +126,8 @@ class HomePage extends ConsumerWidget {
               if (isYouTubeCompleted)
                 TranscriptResultWidget(
                   transcript: state.transcribedText!,
-                  savedFile: state.savedTextFiles.isNotEmpty
-                      ? state.savedTextFiles.first
-                      : null,
+                  translatedText: state.translatedText,
+                  savedFiles: state.savedTextFiles,
                   onNewExtraction: () =>
                       ref.read(translationProvider.notifier).reset(),
                 ),

@@ -280,10 +280,53 @@ class TranslationNotifier extends StateNotifier<TranslationState> {
           }
 
           state = state.copyWith(
-            isLoading: false,
             transcribedText: data.transcript,
             videoTitle: data.title,
             savedTextFiles: savedFile != null ? [savedFile] : [],
+            progress: 0.5,
+            currentStep: PipelineStep.translating,
+            statusMessage: 'Traduction en français...',
+          );
+
+          // Step 2: Translate to French
+          final deeplCode = LanguageMapper.toDeeplCode(state.targetLanguage);
+          final translateResult = await _translateText(
+            TranslateTextParams(text: data.transcript, targetLanguage: deeplCode),
+          );
+
+          final translatedText = translateResult.fold(
+            (failure) {
+              state = state.copyWith(
+                isLoading: false,
+                errorMessage: failure.message,
+                currentStep: PipelineStep.error,
+                statusMessage: null,
+              );
+              return null;
+            },
+            (text) => text,
+          );
+
+          if (translatedText == null) return;
+
+          File? translationFile;
+          try {
+            translationFile = await TranscriptSaver.save(
+              text: translatedText,
+              label: '${data.title}_fr',
+            );
+            debugPrint('[Save] Translation saved: ${translationFile.path}');
+          } catch (e) {
+            debugPrint('[Save] Failed to save translation: $e');
+          }
+
+          state = state.copyWith(
+            isLoading: false,
+            translatedText: translatedText,
+            savedTextFiles: [
+              if (savedFile != null) savedFile,
+              if (translationFile != null) translationFile,
+            ],
             progress: 1.0,
             currentStep: PipelineStep.completed,
             statusMessage: 'Terminé !',

@@ -5,18 +5,20 @@ import 'package:share_plus/share_plus.dart';
 
 class TranscriptResultWidget extends StatelessWidget {
   final String transcript;
+  final String? translatedText;
   final VoidCallback onNewExtraction;
-  final File? savedFile;
+  final List<File> savedFiles;
 
   const TranscriptResultWidget({
     super.key,
     required this.transcript,
+    this.translatedText,
     required this.onNewExtraction,
-    this.savedFile,
+    this.savedFiles = const [],
   });
 
-  void _copyToClipboard(BuildContext context) {
-    Clipboard.setData(ClipboardData(text: transcript));
+  void _copyToClipboard(BuildContext context, String text) {
+    Clipboard.setData(ClipboardData(text: text));
     ScaffoldMessenger.of(context).showSnackBar(
       const SnackBar(
         content: Text('Texte copié dans le presse-papier'),
@@ -25,10 +27,61 @@ class TranscriptResultWidget extends StatelessWidget {
     );
   }
 
-  Future<void> _shareFile() async {
-    if (savedFile == null) return;
+  Future<void> _shareFiles() async {
+    if (savedFiles.isEmpty) return;
     await SharePlus.instance.share(
-      ShareParams(files: [XFile(savedFile!.path)]),
+      ShareParams(files: savedFiles.map((f) => XFile(f.path)).toList()),
+    );
+  }
+
+  Widget _buildTextCard(
+    BuildContext context, {
+    required String title,
+    required IconData icon,
+    required String text,
+  }) {
+    return Card(
+      child: Padding(
+        padding: const EdgeInsets.all(12.0),
+        child: Column(
+          crossAxisAlignment: CrossAxisAlignment.start,
+          children: [
+            Row(
+              children: [
+                Icon(icon, size: 20),
+                const SizedBox(width: 8),
+                Expanded(
+                  child: Text(
+                    title,
+                    style: const TextStyle(fontWeight: FontWeight.bold),
+                  ),
+                ),
+                Text(
+                  '${text.length} caractères',
+                  style: TextStyle(fontSize: 12, color: Colors.grey.shade600),
+                ),
+                const SizedBox(width: 4),
+                IconButton(
+                  icon: const Icon(Icons.copy, size: 18),
+                  onPressed: () => _copyToClipboard(context, text),
+                  tooltip: 'Copier',
+                  visualDensity: VisualDensity.compact,
+                ),
+              ],
+            ),
+            const SizedBox(height: 12),
+            ConstrainedBox(
+              constraints: const BoxConstraints(maxHeight: 200),
+              child: SingleChildScrollView(
+                child: SelectableText(
+                  text,
+                  style: const TextStyle(fontSize: 14),
+                ),
+              ),
+            ),
+          ],
+        ),
+      ),
     );
   }
 
@@ -37,72 +90,45 @@ class TranscriptResultWidget extends StatelessWidget {
     return Column(
       crossAxisAlignment: CrossAxisAlignment.stretch,
       children: [
-        Card(
-          child: Padding(
-            padding: const EdgeInsets.all(12.0),
-            child: Column(
-              crossAxisAlignment: CrossAxisAlignment.start,
-              children: [
-                Row(
-                  children: [
-                    const Icon(Icons.subtitles, size: 20),
-                    const SizedBox(width: 8),
-                    const Expanded(
-                      child: Text(
-                        'Sous-titres extraits',
-                        style: TextStyle(fontWeight: FontWeight.bold),
-                      ),
-                    ),
-                    Text(
-                      '${transcript.length} caractères',
-                      style: TextStyle(
-                        fontSize: 12,
-                        color: Colors.grey.shade600,
-                      ),
-                    ),
-                  ],
-                ),
-                const SizedBox(height: 12),
-                ConstrainedBox(
-                  constraints: const BoxConstraints(maxHeight: 300),
-                  child: SingleChildScrollView(
-                    child: SelectableText(
-                      transcript,
-                      style: const TextStyle(fontSize: 14),
-                    ),
-                  ),
-                ),
-              ],
-            ),
+        // Translated text (primary — shown first if available)
+        if (translatedText != null)
+          _buildTextCard(
+            context,
+            title: 'Traduction française',
+            icon: Icons.translate,
+            text: translatedText!,
           ),
+
+        if (translatedText != null) const SizedBox(height: 8),
+
+        // Original transcript
+        _buildTextCard(
+          context,
+          title: 'Sous-titres originaux',
+          icon: Icons.subtitles,
+          text: transcript,
         ),
+
         const SizedBox(height: 10),
         Row(
           children: [
-            Expanded(
-              child: OutlinedButton.icon(
-                onPressed: () => _copyToClipboard(context),
-                icon: const Icon(Icons.copy),
-                label: const Text('Copier'),
-              ),
-            ),
-            if (savedFile != null) ...[
-              const SizedBox(width: 10),
+            if (savedFiles.isNotEmpty)
               Expanded(
                 child: OutlinedButton.icon(
-                  onPressed: _shareFile,
+                  onPressed: _shareFiles,
                   icon: const Icon(Icons.share),
                   label: const Text('Partager'),
                 ),
               ),
-            ],
+            if (savedFiles.isNotEmpty) const SizedBox(width: 10),
+            Expanded(
+              child: FilledButton.icon(
+                onPressed: onNewExtraction,
+                icon: const Icon(Icons.refresh),
+                label: const Text('Nouvelle extraction'),
+              ),
+            ),
           ],
-        ),
-        const SizedBox(height: 10),
-        FilledButton.icon(
-          onPressed: onNewExtraction,
-          icon: const Icon(Icons.refresh),
-          label: const Text('Nouvelle extraction'),
         ),
       ],
     );
