@@ -1,6 +1,7 @@
 import 'package:fpdart/fpdart.dart';
 import '../../domain/repositories/youtube_transcript_repository.dart';
 import '../datasources/youtube_transcript_data_source.dart';
+import '../../domain/entities/youtube_subtitle_track.dart';
 import '../../../../core/errors/failures.dart';
 import '../../../../core/utils/retry_helper.dart';
 
@@ -10,7 +11,7 @@ class YouTubeTranscriptRepositoryImpl implements YouTubeTranscriptRepository {
   YouTubeTranscriptRepositoryImpl(this._dataSource);
 
   @override
-  Future<Either<Failure, ({String transcript, String title})>> extractTranscript(String videoId) async {
+  Future<Either<Failure, ({String transcript, String title, List<YouTubeSubtitleTrack> tracks})>> extractTranscript(String videoId) async {
     return RetryHelper.retryOperation(() async {
       try {
         final result = await _dataSource.fetchTranscript(videoId);
