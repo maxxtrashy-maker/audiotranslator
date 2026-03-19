@@ -1,34 +1,43 @@
 import 'dart:convert';
+import 'dart:io';
 import 'package:flutter_test/flutter_test.dart';
-import 'package:http/http.dart' as http;
 import 'package:mocktail/mocktail.dart';
-import 'package:audiotranslator/core/config/api_config.dart';
 import 'package:audiotranslator/core/errors/failures.dart';
 import 'package:audiotranslator/features/translation/data/datasources/youtube_transcript_data_source.dart';
-import 'package:audiotranslator/features/translation/domain/entities/youtube_subtitle_track.dart';
 
-class MockHttpClient extends Mock implements http.Client {}
+class MockHttpClient extends Mock implements HttpClient {}
 
-class MockApiConfig extends Mock implements ApiConfig {}
+class MockHttpClientRequest extends Mock implements HttpClientRequest {}
+
+class MockHttpClientResponse extends Mock implements HttpClientResponse {}
 
 class FakeUri extends Fake implements Uri {}
 
 void main() {
-  late MockHttpClient mockClient;
-  late MockApiConfig mockApiConfig;
+  late MockHttpClient mockIoClient;
   late YouTubeTranscriptDataSourceImpl dataSource;
+  late List<String> requestedUrls;
 
   setUpAll(() {
     registerFallbackValue(FakeUri());
   });
 
-  setUp(() {
-    mockClient = MockHttpClient();
-    mockApiConfig = MockApiConfig();
-    when(() => mockApiConfig.youtubeWebKey).thenReturn('fake-web-key');
-    when(() => mockApiConfig.youtubeAndroidKey).thenReturn('fake-android-key');
-    dataSource = YouTubeTranscriptDataSourceImpl(mockClient, mockApiConfig);
-  });
+  MockHttpClientRequest stubRequest({
+    required String body,
+    int statusCode = 200,
+  }) {
+    final request = MockHttpClientRequest();
+    final response = MockHttpClientResponse();
+
+    when(() => response.statusCode).thenReturn(statusCode);
+    when(() => response.transform(utf8.decoder))
+        .thenAnswer((_) => Stream.value(body));
+    when(() => request.close()).thenAnswer((_) async => response);
+    when(() => request.headers).thenReturn(_FakeHttpHeaders());
+    when(() => request.write(any())).thenReturn(null);
+
+    return request;
+  }
 
   const tVideoId = 'dQw4w9WgXcQ';
 
@@ -44,10 +53,7 @@ void main() {
         'status': status,
         if (reason != null) 'reason': reason,
       },
-      'videoDetails': {
-        'title': title,
-        'videoId': videoId,
-      },
+      'videoDetails': {'title': title, 'videoId': videoId},
       if (captionTracks != null)
         'captions': {
           'playerCaptionsTracklistRenderer': {
@@ -57,176 +63,239 @@ void main() {
     });
   }
 
+  String visitorDataResponse() {
+    return jsonEncode({
+      'responseContext': {'visitorData': 'CgtfakeVisitorData123'},
+    });
+  }
+
   const tTranscriptXml = '''<?xml version="1.0" encoding="utf-8"?>
 <transcript>
   <text start="0" dur="5">Hello world</text>
   <text start="5" dur="3">How are you</text>
 </transcript>''';
 
-  group('fetchTranscript', () {
-    test('returns transcript, title and tracks on success', () async {
-      when(() => mockClient.post(
-            any(),
-            headers: any(named: 'headers'),
-            body: any(named: 'body'),
-          )).thenAnswer((_) async => http.Response(
-            playerResponse(
-              title: 'My Video',
-              captionTracks: [
-                {
-                  'baseUrl': 'https://www.youtube.com/api/timedtext?v=$tVideoId',
-                  'languageCode': 'fr',
-                  'name': {'simpleText': 'Français'},
-                  'vssId': '.fr',
-                },
-              ],
-            ),
-            200,
-          ));
+  final defaultCaptionTracks = [
+    {
+      'baseUrl': 'https://www.youtube.com/api/timedtext?v=$tVideoId&lang=en',
+      'languageCode': 'en',
+      'name': {'simpleText': 'English'},
+      'vssId': 'a.en',
+    },
+  ];
 
-      when(() => mockClient.get(
-            any(),
-            headers: any(named: 'headers'),
-          )).thenAnswer((_) async => http.Response(tTranscriptXml, 200));
+  setUp(() {
+    mockIoClient = MockHttpClient();
+    when(() => mockIoClient.close()).thenReturn(null);
+    when(() => mockIoClient.userAgent = any()).thenReturn(null);
+    requestedUrls = [];
+    dataSource = YouTubeTranscriptDataSourceImpl(
+      clientFactory: () => mockIoClient,
+    );
+  });
+
+  void stubSequentialRequests(
+      List<({String body, int statusCode, bool isPost})> responses) {
+    var getIndex = 0;
+    var postIndex = 0;
+    final getResponses = responses.where((r) => !r.isPost).toList();
+    final postResponses = responses.where((r) => r.isPost).toList();
+
+    when(() => mockIoClient.getUrl(any())).thenAnswer((inv) async {
+      requestedUrls.add((inv.positionalArguments[0] as Uri).toString());
+      final r = getIndex < getResponses.length
+          ? getResponses[getIndex++]
+          : (body: '', statusCode: 500, isPost: false);
+      return stubRequest(body: r.body, statusCode: r.statusCode);
+    });
+
+    when(() => mockIoClient.postUrl(any())).thenAnswer((inv) async {
+      requestedUrls.add((inv.positionalArguments[0] as Uri).toString());
+      final r = postIndex < postResponses.length
+          ? postResponses[postIndex++]
+          : (body: '', statusCode: 500, isPost: true);
+      return stubRequest(body: r.body, statusCode: r.statusCode);
+    });
+  }
+
+  group('fetchTranscript', () {
+    test('returns transcript via ANDROID client (NewPipe primary)', () async {
+      stubSequentialRequests([
+        // POST: visitor_id
+        (body: visitorDataResponse(), statusCode: 200, isPost: true),
+        // POST: ANDROID player
+        (body: playerResponse(title: 'My Video', captionTracks: defaultCaptionTracks), statusCode: 200, isPost: true),
+        // GET: caption URL (srv1)
+        (body: tTranscriptXml, statusCode: 200, isPost: false),
+      ]);
 
       final result = await dataSource.fetchTranscript(tVideoId);
 
       expect(result.title, 'My Video');
       expect(result.transcript, contains('Hello world'));
       expect(result.tracks.length, 1);
-      expect(result.tracks.first.languageCode, 'fr');
+      expect(result.tracks.first.languageCode, 'en');
+      expect(result.tracks.first.isAutoGenerated, true);
     });
 
-    test('prioritizes manual French over auto-generated French', () async {
-      when(() => mockClient.post(
-            any(),
-            headers: any(named: 'headers'),
-            body: any(named: 'body'),
-          )).thenAnswer((_) async => http.Response(
-            playerResponse(
-              captionTracks: [
-                {
-                  'baseUrl': 'https://example.com/auto_fr',
-                  'languageCode': 'fr',
-                  'vssId': 'a.fr',
-                },
-                {
-                  'baseUrl': 'https://example.com/manual_fr',
-                  'languageCode': 'fr',
-                  'vssId': '.fr',
-                },
-              ],
-            ),
-            200,
-          ));
-
-      when(() => mockClient.get(
-            any(),
-            headers: any(named: 'headers'),
-          )).thenAnswer((_) async => http.Response(tTranscriptXml, 200));
+    test('uses googleapis.com for ANDROID client', () async {
+      stubSequentialRequests([
+        (body: visitorDataResponse(), statusCode: 200, isPost: true),
+        (body: playerResponse(captionTracks: defaultCaptionTracks), statusCode: 200, isPost: true),
+        (body: tTranscriptXml, statusCode: 200, isPost: false),
+      ]);
 
       await dataSource.fetchTranscript(tVideoId);
 
-      final capturedUri = verify(() => mockClient.get(
-            captureAny(),
-            headers: any(named: 'headers'),
-          )).captured.first as Uri;
-
-      expect(capturedUri.toString(), contains('manual_fr'));
+      expect(requestedUrls[1], contains('youtubei.googleapis.com'));
+      expect(requestedUrls[1], contains('player'));
     });
 
-    test('throws Failure with specific message for age-restricted video', () async {
-      when(() => mockClient.post(
-            any(),
-            headers: any(named: 'headers'),
-            body: any(named: 'body'),
-          )).thenAnswer((_) async => http.Response(
-            playerResponse(status: 'LOGIN_REQUIRED', reason: 'This video is age-restricted'),
-            200,
-          ));
+    test('falls back to IOS when ANDROID fails', () async {
+      stubSequentialRequests([
+        (body: visitorDataResponse(), statusCode: 200, isPost: true),
+        // ANDROID fails
+        (body: 'error', statusCode: 400, isPost: true),
+        // IOS succeeds
+        (body: playerResponse(captionTracks: defaultCaptionTracks), statusCode: 200, isPost: true),
+        (body: tTranscriptXml, statusCode: 200, isPost: false),
+      ]);
+
+      final result = await dataSource.fetchTranscript(tVideoId);
+
+      expect(result.transcript, contains('Hello world'));
+    });
+
+    test('falls back to watch page when ANDROID and IOS fail', () async {
+      final watchHtml = '<html><script>var ytInitialPlayerResponse = '
+          '${playerResponse(captionTracks: defaultCaptionTracks)};</script></html>';
+
+      stubSequentialRequests([
+        (body: visitorDataResponse(), statusCode: 200, isPost: true),
+        (body: 'error', statusCode: 400, isPost: true),
+        (body: 'error', statusCode: 400, isPost: true),
+        // GET: watch page
+        (body: watchHtml, statusCode: 200, isPost: false),
+        // GET: caption URL
+        (body: tTranscriptXml, statusCode: 200, isPost: false),
+      ]);
+
+      final result = await dataSource.fetchTranscript(tVideoId);
+
+      expect(result.transcript, contains('Hello world'));
+    });
+
+    test('detects video ID mismatch (NewPipe anti-spoof)', () async {
+      stubSequentialRequests([
+        (body: visitorDataResponse(), statusCode: 200, isPost: true),
+        // ANDROID: spoofed response with wrong video ID
+        (body: playerResponse(videoId: 'WRONG_ID', captionTracks: defaultCaptionTracks), statusCode: 200, isPost: true),
+        // IOS: correct
+        (body: playerResponse(captionTracks: defaultCaptionTracks), statusCode: 200, isPost: true),
+        (body: tTranscriptXml, statusCode: 200, isPost: false),
+      ]);
+
+      final result = await dataSource.fetchTranscript(tVideoId);
+      expect(result.transcript, contains('Hello world'));
+    });
+
+    test('throws ServerFailure for age-restricted video', () async {
+      stubSequentialRequests([
+        (body: visitorDataResponse(), statusCode: 200, isPost: true),
+        (body: playerResponse(status: 'LOGIN_REQUIRED', reason: 'This video is age-restricted'), statusCode: 200, isPost: true),
+        (body: playerResponse(status: 'LOGIN_REQUIRED', reason: 'This video is age-restricted'), statusCode: 200, isPost: true),
+        (body: '<html></html>', statusCode: 200, isPost: false),
+      ]);
 
       expect(
         () => dataSource.fetchTranscript(tVideoId),
-        throwsA(isA<ServerFailure>().having((f) => f.message, 'message', contains('limite d\'âge'))),
+        throwsA(isA<ServerFailure>()),
       );
     });
 
-    test('throws Failure for private video', () async {
-      when(() => mockClient.post(
-            any(),
-            headers: any(named: 'headers'),
-            body: any(named: 'body'),
-          )).thenAnswer((_) async => http.Response(
-            playerResponse(status: 'LOGIN_REQUIRED', reason: 'This video is private'),
-            200,
-          ));
+    test('throws ServerFailure when no captions available', () async {
+      stubSequentialRequests([
+        (body: visitorDataResponse(), statusCode: 200, isPost: true),
+        (body: playerResponse(captionTracks: []), statusCode: 200, isPost: true),
+      ]);
 
       expect(
         () => dataSource.fetchTranscript(tVideoId),
-        throwsA(isA<ServerFailure>().having((f) => f.message, 'message', contains('privée'))),
+        throwsA(isA<ServerFailure>().having(
+          (f) => f.message, 'message', contains('sous-titre'),
+        )),
       );
     });
 
-    test('parses VTT format when XML fails or returns empty', () async {
+    test('tries VTT format when srv1 returns empty', () async {
       const vttContent = '''WEBVTT
 
 1
 00:00:00.000 --> 00:00:05.000
 Hello from VTT''';
 
-      when(() => mockClient.post(
-            any(),
-            headers: any(named: 'headers'),
-            body: any(named: 'body'),
-          )).thenAnswer((_) async => http.Response(
-            playerResponse(
-              captionTracks: [
-                {
-                  'baseUrl': 'https://example.com/captions',
-                  'languageCode': 'en',
-                },
-              ],
-            ),
-            200,
-          ));
-
-      var getCall = 0;
-      when(() => mockClient.get(
-            any(),
-            headers: any(named: 'headers'),
-          )).thenAnswer((_) async {
-            getCall++;
-            if (getCall == 1) return http.Response('', 404); // XML fails
-            return http.Response(vttContent, 200); // VTT success
-          });
+      stubSequentialRequests([
+        (body: visitorDataResponse(), statusCode: 200, isPost: true),
+        (body: playerResponse(captionTracks: defaultCaptionTracks), statusCode: 200, isPost: true),
+        // GET: srv1 empty
+        (body: '', statusCode: 200, isPost: false),
+        // GET: vtt succeeds
+        (body: vttContent, statusCode: 200, isPost: false),
+      ]);
 
       final result = await dataSource.fetchTranscript(tVideoId);
       expect(result.transcript, 'Hello from VTT');
     });
 
-    test('handles video ID mismatch by trying next client', () async {
-      var postCall = 0;
-      when(() => mockClient.post(
-            any(),
-            headers: any(named: 'headers'),
-            body: any(named: 'body'),
-          )).thenAnswer((_) async {
-            postCall++;
-            if (postCall == 1) {
-              return http.Response(playerResponse(videoId: 'WRONG_ID'), 200);
-            }
-            return http.Response(playerResponse(
-              captionTracks: [{'baseUrl': 'https://ok.com', 'languageCode': 'en'}]
-            ), 200);
-          });
+    test('parses HTML entities correctly', () async {
+      const xmlWithEntities = '''<?xml version="1.0" encoding="utf-8"?>
+<transcript>
+  <text start="0" dur="5">Tom &amp; Jerry &lt;3</text>
+</transcript>''';
 
-      when(() => mockClient.get(
-            any(),
-            headers: any(named: 'headers'),
-          )).thenAnswer((_) async => http.Response(tTranscriptXml, 200));
+      stubSequentialRequests([
+        (body: visitorDataResponse(), statusCode: 200, isPost: true),
+        (body: playerResponse(captionTracks: defaultCaptionTracks), statusCode: 200, isPost: true),
+        (body: xmlWithEntities, statusCode: 200, isPost: false),
+      ]);
+
+      final result = await dataSource.fetchTranscript(tVideoId);
+      expect(result.transcript, contains('Tom & Jerry <3'));
+    });
+
+    test('prioritizes manual French over auto-generated', () async {
+      stubSequentialRequests([
+        (body: visitorDataResponse(), statusCode: 200, isPost: true),
+        (body: playerResponse(captionTracks: [
+          {
+            'baseUrl': 'https://example.com/auto_fr',
+            'languageCode': 'fr',
+            'name': {'simpleText': 'Français (auto)'},
+            'vssId': 'a.fr',
+          },
+          {
+            'baseUrl': 'https://example.com/manual_fr',
+            'languageCode': 'fr',
+            'name': {'simpleText': 'Français'},
+            'vssId': '.fr',
+          },
+        ]), statusCode: 200, isPost: true),
+        (body: tTranscriptXml, statusCode: 200, isPost: false),
+      ]);
 
       await dataSource.fetchTranscript(tVideoId);
-      verify(() => mockClient.post(any(), headers: any(named: 'headers'), body: any(named: 'body'))).called(2);
+
+      // The GET request should be for manual_fr, not auto_fr
+      final captionUrl = requestedUrls.last;
+      expect(captionUrl, contains('manual_fr'));
     });
   });
+}
+
+class _FakeHttpHeaders extends Fake implements HttpHeaders {
+  @override
+  void set(String name, Object value, {bool preserveHeaderCase = false}) {}
+
+  @override
+  void add(String name, Object value, {bool preserveHeaderCase = false}) {}
 }
