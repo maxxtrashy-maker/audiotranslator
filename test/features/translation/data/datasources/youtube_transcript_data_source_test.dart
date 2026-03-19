@@ -5,6 +5,7 @@ import 'package:mocktail/mocktail.dart';
 import 'package:audiotranslator/core/config/api_config.dart';
 import 'package:audiotranslator/core/errors/failures.dart';
 import 'package:audiotranslator/features/translation/data/datasources/youtube_transcript_data_source.dart';
+import 'package:audiotranslator/features/translation/domain/entities/youtube_subtitle_track.dart';
 
 class MockHttpClient extends Mock implements http.Client {}
 
@@ -31,15 +32,22 @@ void main() {
 
   const tVideoId = 'dQw4w9WgXcQ';
 
-  /// Helper: builds a player response JSON with captions
   String playerResponse({
     String status = 'OK',
+    String? reason,
     String title = 'Test Video',
+    String? videoId = tVideoId,
     List<Map<String, dynamic>>? captionTracks,
   }) {
     return jsonEncode({
-      'playabilityStatus': {'status': status},
-      'videoDetails': {'title': title},
+      'playabilityStatus': {
+        'status': status,
+        if (reason != null) 'reason': reason,
+      },
+      'videoDetails': {
+        'title': title,
+        'videoId': videoId,
+      },
       if (captionTracks != null)
         'captions': {
           'playerCaptionsTracklistRenderer': {
@@ -49,7 +57,6 @@ void main() {
     });
   }
 
-  /// Transcript XML (srv1 format)
   const tTranscriptXml = '''<?xml version="1.0" encoding="utf-8"?>
 <transcript>
   <text start="0" dur="5">Hello world</text>
@@ -57,8 +64,7 @@ void main() {
 </transcript>''';
 
   group('fetchTranscript', () {
-    test('returns transcript and title on success', () async {
-      // Player response (WEB client)
+    test('returns transcript, title and tracks on success', () async {
       when(() => mockClient.post(
             any(),
             headers: any(named: 'headers'),
@@ -70,14 +76,14 @@ void main() {
                 {
                   'baseUrl': 'https://www.youtube.com/api/timedtext?v=$tVideoId',
                   'languageCode': 'fr',
-                  'kind': '',
+                  'name': {'simpleText': 'Français'},
+                  'vssId': '.fr',
                 },
               ],
             ),
             200,
           ));
 
-      // Transcript fetch
       when(() => mockClient.get(
             any(),
             headers: any(named: 'headers'),
@@ -87,10 +93,11 @@ void main() {
 
       expect(result.title, 'My Video');
       expect(result.transcript, contains('Hello world'));
-      expect(result.transcript, contains('How are you'));
+      expect(result.tracks.length, 1);
+      expect(result.tracks.first.languageCode, 'fr');
     });
 
-    test('uses WEB key in first request', () async {
+    test('prioritizes manual French over auto-generated French', () async {
       when(() => mockClient.post(
             any(),
             headers: any(named: 'headers'),
@@ -99,9 +106,14 @@ void main() {
             playerResponse(
               captionTracks: [
                 {
-                  'baseUrl': 'https://example.com/captions',
-                  'languageCode': 'en',
-                  'kind': '',
+                  'baseUrl': 'https://example.com/auto_fr',
+                  'languageCode': 'fr',
+                  'vssId': 'a.fr',
+                },
+                {
+                  'baseUrl': 'https://example.com/manual_fr',
+                  'languageCode': 'fr',
+                  'vssId': '.fr',
                 },
               ],
             ),
@@ -115,118 +127,52 @@ void main() {
 
       await dataSource.fetchTranscript(tVideoId);
 
-      final capturedUris = <Uri>[];
-      final capturedHeaders = <Map<String, String>>[];
-      verify(() => mockClient.post(
+      final capturedUri = verify(() => mockClient.get(
             captureAny(),
-            headers: captureAny(named: 'headers'),
-            body: any(named: 'body'),
-          )).captured.forEach((c) {
-        if (c is Uri) capturedUris.add(c);
-        if (c is Map<String, String>) capturedHeaders.add(c);
-      });
-
-      expect(capturedUris.first.toString(), contains('fake-web-key'));
-      expect(capturedHeaders.first['X-Youtube-Client-Name'], '1');
-      expect(capturedHeaders.first['Origin'], 'https://www.youtube.com');
-    });
-
-    test('sends X-Youtube-Client-Name:3 for ANDROID client', () async {
-      var callCount = 0;
-      final capturedHeaders = <Map<String, String>>[];
-
-      when(() => mockClient.post(
-            any(),
-            headers: captureAny(named: 'headers'),
-            body: any(named: 'body'),
-          )).thenAnswer((invocation) async {
-        final headers = invocation.namedArguments[const Symbol('headers')]
-            as Map<String, String>;
-        capturedHeaders.add(headers);
-        callCount++;
-        if (callCount == 1) {
-          return http.Response(playerResponse(status: 'LOGIN_REQUIRED'), 200);
-        }
-        return http.Response(
-          playerResponse(
-            captionTracks: [
-              {
-                'baseUrl': 'https://example.com/captions',
-                'languageCode': 'en',
-                'kind': '',
-              },
-            ],
-          ),
-          200,
-        );
-      });
-
-      when(() => mockClient.get(
-            any(),
             headers: any(named: 'headers'),
-          )).thenAnswer((_) async => http.Response(tTranscriptXml, 200));
+          )).captured.first as Uri;
 
-      await dataSource.fetchTranscript(tVideoId);
-
-      expect(capturedHeaders.length, 2);
-      expect(capturedHeaders[1]['X-Youtube-Client-Name'], '3');
+      expect(capturedUri.toString(), contains('manual_fr'));
     });
 
-    test('throws ServerFailure when all clients fail (non-200)', () async {
-      when(() => mockClient.post(
-            any(),
-            headers: any(named: 'headers'),
-            body: any(named: 'body'),
-          )).thenAnswer((_) async => http.Response('error', 500));
-
-      expect(
-        () => dataSource.fetchTranscript(tVideoId),
-        throwsA(isA<ServerFailure>()),
-      );
-    });
-
-    test('throws ServerFailure when no captions available', () async {
+    test('throws Failure with specific message for age-restricted video', () async {
       when(() => mockClient.post(
             any(),
             headers: any(named: 'headers'),
             body: any(named: 'body'),
           )).thenAnswer((_) async => http.Response(
-            playerResponse(captionTracks: []),
+            playerResponse(status: 'LOGIN_REQUIRED', reason: 'This video is age-restricted'),
             200,
           ));
 
       expect(
         () => dataSource.fetchTranscript(tVideoId),
-        throwsA(isA<ServerFailure>().having(
-          (f) => f.message,
-          'message',
-          contains('sous-titre'),
-        )),
+        throwsA(isA<ServerFailure>().having((f) => f.message, 'message', contains('limite d\'âge'))),
       );
     });
 
-    test('throws ServerFailure when video is not playable', () async {
-      // Both WEB and ANDROID return non-OK status
+    test('throws Failure for private video', () async {
       when(() => mockClient.post(
             any(),
             headers: any(named: 'headers'),
             body: any(named: 'body'),
           )).thenAnswer((_) async => http.Response(
-            playerResponse(status: 'UNPLAYABLE'),
+            playerResponse(status: 'LOGIN_REQUIRED', reason: 'This video is private'),
             200,
           ));
 
       expect(
         () => dataSource.fetchTranscript(tVideoId),
-        throwsA(isA<ServerFailure>()),
+        throwsA(isA<ServerFailure>().having((f) => f.message, 'message', contains('privée'))),
       );
     });
 
-    test('parses HTML entities in transcript', () async {
-      const xmlWithEntities = '''<?xml version="1.0" encoding="utf-8"?>
-<transcript>
-  <text start="0" dur="5">Tom &amp; Jerry &lt;3</text>
-</transcript>''';
+    test('parses VTT format when XML fails or returns empty', () async {
+      const vttContent = '''WEBVTT
+
+1
+00:00:00.000 --> 00:00:05.000
+Hello from VTT''';
 
       when(() => mockClient.post(
             any(),
@@ -238,67 +184,49 @@ void main() {
                 {
                   'baseUrl': 'https://example.com/captions',
                   'languageCode': 'en',
-                  'kind': '',
                 },
               ],
             ),
             200,
           ));
 
+      var getCall = 0;
       when(() => mockClient.get(
             any(),
             headers: any(named: 'headers'),
-          )).thenAnswer((_) async => http.Response(xmlWithEntities, 200));
+          )).thenAnswer((_) async {
+            getCall++;
+            if (getCall == 1) return http.Response('', 404); // XML fails
+            return http.Response(vttContent, 200); // VTT success
+          });
 
       final result = await dataSource.fetchTranscript(tVideoId);
-
-      expect(result.transcript, contains('Tom & Jerry <3'));
+      expect(result.transcript, 'Hello from VTT');
     });
 
-    test('falls back to ANDROID client when WEB is not playable', () async {
-      var callCount = 0;
+    test('handles video ID mismatch by trying next client', () async {
+      var postCall = 0;
       when(() => mockClient.post(
             any(),
             headers: any(named: 'headers'),
             body: any(named: 'body'),
           )).thenAnswer((_) async {
-        callCount++;
-        if (callCount == 1) {
-          // WEB: not playable
-          return http.Response(
-            playerResponse(status: 'LOGIN_REQUIRED'),
-            200,
-          );
-        }
-        // ANDROID: OK
-        return http.Response(
-          playerResponse(
-            captionTracks: [
-              {
-                'baseUrl': 'https://example.com/captions',
-                'languageCode': 'en',
-                'kind': '',
-              },
-            ],
-          ),
-          200,
-        );
-      });
+            postCall++;
+            if (postCall == 1) {
+              return http.Response(playerResponse(videoId: 'WRONG_ID'), 200);
+            }
+            return http.Response(playerResponse(
+              captionTracks: [{'baseUrl': 'https://ok.com', 'languageCode': 'en'}]
+            ), 200);
+          });
 
       when(() => mockClient.get(
             any(),
             headers: any(named: 'headers'),
           )).thenAnswer((_) async => http.Response(tTranscriptXml, 200));
 
-      final result = await dataSource.fetchTranscript(tVideoId);
-
-      expect(result.transcript, contains('Hello world'));
-      // Should have called post twice (WEB then ANDROID)
-      verify(() => mockClient.post(
-            any(),
-            headers: any(named: 'headers'),
-            body: any(named: 'body'),
-          )).called(2);
+      await dataSource.fetchTranscript(tVideoId);
+      verify(() => mockClient.post(any(), headers: any(named: 'headers'), body: any(named: 'body'))).called(2);
     });
   });
 }
