@@ -5,6 +5,7 @@ import 'dart:math';
 import 'package:flutter/foundation.dart';
 import 'package:xml/xml.dart' as xml;
 import '../../../../core/errors/failures.dart';
+import '../../../../core/utils/subtitle_cleaner.dart';
 import '../../domain/entities/youtube_subtitle_track.dart';
 
 abstract class YouTubeTranscriptDataSource {
@@ -191,8 +192,11 @@ class YouTubeTranscriptDataSourceImpl implements YouTubeTranscriptDataSource {
         throw const ServerFailure('Les sous-titres extraits sont vides.');
       }
 
-      debugPrint('[YT] Final transcript: ${transcript.length} chars');
-      return (transcript: transcript, title: videoTitle, tracks: tracks);
+      // Clean non-speech artifacts ([musique], >>, filler words, etc.)
+      final cleaned = SubtitleCleaner.clean(transcript);
+      debugPrint('[YT] Final transcript: ${cleaned.length} chars '
+          '(cleaned from ${transcript.length})');
+      return (transcript: cleaned, title: videoTitle, tracks: tracks);
     } on TimeoutException {
       throw const TimeoutFailure(
         'Le chargement des sous-titres a dépassé le délai.',
